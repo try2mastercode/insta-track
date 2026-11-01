@@ -737,6 +737,12 @@
       const fill = $('#phase' + (i ? 'Following' : 'Followers') + 'Fill');
       fill.style.width = ppct + '%';
       fill.classList.toggle('done', done);
+      // Batch stats: how many accounts Instagram really returns per request, and how long a request takes.
+      const r = ph.lastReq;
+      setText(
+        $('#phase' + (i ? 'Following' : 'Followers') + 'Stats'),
+        r ? `${fmt(ph.batches)} requests · last: asked ${r.asked}, got ${r.got} in ${(r.ms / 1000).toFixed(1)}s · avg ${(ph.totalReqMs / ph.batches / 1000).toFixed(1)}s` : ''
+      );
     });
 
     // status pill + text + ETA

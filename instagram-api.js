@@ -37,7 +37,7 @@
     // and compare the "x-ig-app-id" request header with this value. It can change.
     APP_ID: '936619743392459',
 
-    PAGE_SIZE: 50, // accounts per request
+    PAGE_SIZE: 100, // accounts per request
     TIMEOUT_MS: 30000, // per-request timeout
     SNIPPET_CHARS: 500, // raw response snippet kept on every error
     RAW_CHARS: 6000, // larger raw sample kept for the "Save raw first response" button

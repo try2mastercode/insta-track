@@ -44,7 +44,7 @@
   const CURSOR_EXPIRY_CODES = new Set(['SOFT_FAIL', 'UNEXPECTED_RESPONSE_FORMAT', 'PAGINATION_ERROR']);
 
   const DEFAULT_CONFIG = {
-    batchSize: 50,
+    batchSize: 100,
     delayMinMs: 2000,
     delayMaxMs: 5000,
     longPauseMinMs: 20000,
@@ -591,6 +591,9 @@
         page.users.forEach((u) => users.set(u.id, [u.u, u.n, u.p]));
         ph.batches += 1;
         ph.collected = users.size;
+        ph.lastReq = res.stats;
+        ph.maxGot = Math.max(ph.maxGot || 0, res.stats.got);
+        ph.totalReqMs = (ph.totalReqMs || 0) + res.stats.ms;
         ph.updatedAt = now();
 
         // Cycle timing for the ETA (skip cycles disturbed by retries).
@@ -686,9 +689,12 @@
           meta.waitReason = null;
         }
         try {
+          const startedAt = now();
           const page = await api.fetchPage(phase, meta.account.id, cursor, { count: cfg.batchSize });
+          const stats = { asked: cfg.batchSize, got: page.users.length, ms: now() - startedAt };
+          debug(`${phase} batch ${batchNo}: asked ${stats.asked}, got ${stats.got} in ${stats.ms} ms`);
           await flushDebug();
-          return { page };
+          return { page, stats };
         } catch (e0) {
           await flushDebug();
           const e = asApiError(e0);

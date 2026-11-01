@@ -34,9 +34,10 @@ function png(size) {
       const dy = Math.max(r - y - 0.5, 0, y + 0.5 - (size - r));
       const inside = dx * dx + dy * dy <= r * r;
       const t = (x + y) / (2 * size);
-      let R = Math.round(131 + (245 - 131) * t);
-      let G = Math.round(58 + (133 - 58) * t);
-      let B = Math.round(180 + (41 - 180) * t);
+      // black -> gold
+      let R = Math.round(20 + (212 - 20) * t);
+      let G = Math.round(16 + (175 - 16) * t);
+      let B = Math.round(4 + (55 - 4) * t);
       // white person silhouette (head + shoulders)
       const cx = size * 0.5;
       const head = Math.hypot(x + 0.5 - cx, y + 0.5 - size * 0.38) < size * 0.14;
@@ -45,12 +46,14 @@ function png(size) {
       const d = Math.abs(x + 0.5 - (size - (y + 0.5))) / Math.SQRT2;
       const slash = d < Math.max(1, size * 0.045) && x > size * 0.15 && x < size * 0.85 && y > size * 0.15 && y < size * 0.85;
       if (head || body) {
-        R = G = B = 255;
+        R = 245;
+        G = 215;
+        B = 110;
       }
       if (slash) {
-        R = 30;
-        G = 30;
-        B = 30;
+        R = 255;
+        G = 255;
+        B = 255;
       }
       raw[i] = R;
       raw[i + 1] = G;

@@ -97,7 +97,7 @@ Compute the same list from Instagram's "Download your information" files, with n
 
 **Architecture.** The scan loop runs inside a **content script on the instagram.com tab**, using your existing logged-in session (same-origin requests, `credentials: "include"`). It saves all state to `chrome.storage.local` after every batch. The side panel is only a display and control surface: opening, closing or replacing it never affects a running scan. The service worker is minimal (opens the panel, badge, notifications, keep-awake, watchdog).
 
-**Pacing.** Batches of about 50 accounts, a random 2-5 s delay between batches, and a longer random 20-60 s pause every 5-8 batches. All timing is timestamp-based, so a throttled background tab only slows the scan and never causes an error.
+**Pacing.** Batches of about 100 accounts, a random 2-5 s delay between batches, and a longer random 20-60 s pause every 5-8 batches. All timing is timestamp-based, so a throttled background tab only slows the scan and never causes an error.
 
 **Error handling.**
 

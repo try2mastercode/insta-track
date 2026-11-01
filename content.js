@@ -321,9 +321,9 @@
         let cursor = null;
         for (let page = 0; page < 200; page++) {
           report(`Reading your following list: ${map.size} so far`);
-          const p = await realApi.fetchPage('following', userId, cursor, { count: 50 });
+          const p = await realApi.fetchPage('following', userId, cursor, { count: 100 });
           cursor = p.nextCursor;
-          // Count up one by one instead of jumping a whole page (50) at once. The delay doubles as the pause between requests.
+          // Count up one by one instead of jumping a whole page (100) at once. The delay doubles as the pause between requests.
           const wait = cursor ? jitter(1500, 3000) : 600;
           const step = wait / Math.max(1, p.users.length);
           for (const u of p.users) {
@@ -335,6 +335,47 @@
         }
         st.following = Array.from(map.values());
         await store.set({ quickState: st });
+      }
+
+      // 4. your own totals: the profile endpoint if it answers, else the number shown on this page
+      let followersCount = null;
+      let username = (location.pathname.split('/').filter(Boolean)[0] || '').replace(/^user /, '');
+      try {
+        const p = await realApi.fetchProfile(userId);
+        followersCount = p.followers;
+        username = p.username || username;
+      } catch (e) {
+        const leaf = Array.from(document.querySelectorAll('header *, main *')).find(
+          (el) => el.children.length <= 2 && /^[\d.,]+\s*[KkMm]?\s+followers$/i.test((el.textContent || '').trim())
+        );
+        const m = leaf && /([\d.,]+)\s*([KkMm])?/.exec(leaf.textContent);
+        if (m) {
+          let n = parseFloat(m[1].replace(/,/g, ''));
+          if (m[2]) n *= /k/i.test(m[2]) ? 1e3 : 1e6;
+          if (Number.isFinite(n)) followersCount = Math.round(n);
+        }
+      }
+      // 5. names of the followers you don't follow back: read the followers window, compare it with the following list
+      let fans = null;
+      let followerNames = null;
+      let fansNote = '';
+      try {
+        const names = await scrapeList(username, 'followers', followersCount, (t) => report(t));
+        followerNames = names;
+        const followingSet = new Set(st.following.map((u) => String(u.u).toLowerCase()));
+        fans = names.filter((f) => !followingSet.has(f.u.toLowerCase())).map((f) => ({ id: 'u:' + f.u.toLowerCase(), u: f.u, n: '', p: '' }));
+        fansNote = followersCount != null && names.length < followersCount ? `Only ${names.length} of ${followersCount} followers could be read, so this list may be incomplete.` : `${names.length} follower names were read.`;
+      } catch (e) {
+        fansNote = `Follower names were not read: ${(e && e.message) || e}`;
+      }
+      // Fast path: the followers window gives every follower name, so "who does not follow back" is just
+      // following minus followers (a set lookup, no per-account requests). Used only when that list looks
+      // complete; otherwise fall through to the one-by-one check below.
+      const followerSet =
+        followerNames && followersCount != null && followerNames.length >= Math.floor(followersCount * 0.98) ? new Set(followerNames.map((f) => f.u.toLowerCase())) : null;
+      if (followerSet) {
+        for (const u of st.following) st.checked[u.id] = followerSet.has(String(u.u).toLowerCase()) ? 1 : 0;
+        report(`Compared ${st.following.length} following with ${followerNames.length} followers.`);
       }
 
       // 2. for each account: does it follow you back?
@@ -398,37 +439,6 @@
         pending = (jj.users || []).filter((u) => u && u.username).map((u) => ({ id: String(u.pk || u.pk_id || u.id || 'u:' + u.username), u: u.username, n: u.full_name || '', p: u.profile_pic_url || '' }));
       } catch (e) {
         pendingNote = 'Follow requests could not be read.';
-      }
-      // 4. your own totals: the profile endpoint if it answers, else the number shown on this page
-      let followersCount = null;
-      let username = (location.pathname.split('/').filter(Boolean)[0] || '').replace(/^user /, '');
-      try {
-        const p = await realApi.fetchProfile(userId);
-        followersCount = p.followers;
-        username = p.username || username;
-      } catch (e) {
-        const leaf = Array.from(document.querySelectorAll('header *, main *')).find(
-          (el) => el.children.length <= 2 && /^[\d.,]+\s*[KkMm]?\s+followers$/i.test((el.textContent || '').trim())
-        );
-        const m = leaf && /([\d.,]+)\s*([KkMm])?/.exec(leaf.textContent);
-        if (m) {
-          let n = parseFloat(m[1].replace(/,/g, ''));
-          if (m[2]) n *= /k/i.test(m[2]) ? 1e3 : 1e6;
-          if (Number.isFinite(n)) followersCount = Math.round(n);
-        }
-      }
-      // 5. names of the followers you don't follow back: read the followers window, compare it with the following list
-      let fans = null;
-      let followerNames = null;
-      let fansNote = '';
-      try {
-        const names = await scrapeList(username, 'followers', followersCount, (t) => report(t));
-        followerNames = names;
-        const followingSet = new Set(st.following.map((u) => String(u.u).toLowerCase()));
-        fans = names.filter((f) => !followingSet.has(f.u.toLowerCase())).map((f) => ({ id: 'u:' + f.u.toLowerCase(), u: f.u, n: '', p: '' }));
-        fansNote = followersCount != null && names.length < followersCount ? `Only ${names.length} of ${followersCount} followers could be read, so this list may be incomplete.` : `${names.length} follower names were read.`;
-      } catch (e) {
-        fansNote = `Follower names were not read: ${(e && e.message) || e}`;
       }
       const nonFollowers = st.following.filter((u) => st.checked[u.id] === 0);
       const mutualCount = st.following.filter((u) => st.checked[u.id] === 1).length;

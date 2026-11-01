@@ -62,7 +62,7 @@ function makeTab({ storage, clock, scenario = 'normal', mockOpts = {}, onSleep, 
       return () => ((s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296);
     })(),
     hooks: { onEvent: (e) => events.push(e), keepAwake: () => {} },
-    config,
+    config: Object.assign({ batchSize: 50 }, config), // scenarios are written for 50-account pages
     instanceId,
   });
   return { engine, mock, events, sleeps: () => sleeps };
