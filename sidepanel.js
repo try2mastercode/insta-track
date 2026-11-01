@@ -14,8 +14,8 @@
   const PHASES = ['followers', 'following'];
   const STALE_PROGRESS_MS = 3 * 24 * 3600 * 1000;
   const ROW_H = 56;
-  const KEYS = ['scan', 'results', 'importResults', 'errors', 'debuglog', 'ignored', 'lastSession', 'settings', 'rawFirstResponse', 'ack', 'watchdog'];
-  const DEFAULTS = { errors: [], debuglog: [], ignored: [], settings: {}, ack: false };
+  const KEYS = ['scan', 'results', 'importResults', 'errors', 'debuglog', 'ignored', 'lastSession', 'settings', 'rawFirstResponse', 'ack', 'watchdog', 'pending', 'done', 'tags'];
+  const DEFAULTS = { errors: [], debuglog: [], ignored: [], done: [], tags: { defs: [], assign: {} }, settings: {}, ack: false };
   const PLACEHOLDER =
     'data:image/svg+xml;utf8,' +
     encodeURIComponent(
@@ -26,6 +26,25 @@
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+  /** Always shows minutes and seconds, e.g. "12 min 05 s" (hours when needed). */
+  const clock = (ms) => {
+    const t = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const sec = String(t % 60).padStart(2, '0');
+    return h ? `${h} h ${String(m).padStart(2, '0')} min ${sec} s` : `${m} min ${sec} s`;
+  };
+  /** Animated countdown: spinning clock ring that fills up, exact time left, exact finish time, full-width bar. */
+  const CD_C = 2 * Math.PI * 19;
+  function cdUpdate(el, leftMs, totalMs) {
+    if (!el.firstChild) {
+      el.innerHTML = `<div class="cd-row"><svg class="cd-ring" viewBox="0 0 44 44" aria-hidden="true"><circle class="cd-track" cx="22" cy="22" r="19"/><circle class="cd-fill" cx="22" cy="22" r="19" stroke-dasharray="${CD_C}" stroke-dashoffset="${CD_C}"/><g class="cd-hands"><line x1="22" y1="22" x2="22" y2="9"/></g><circle class="cd-dot" cx="22" cy="22" r="2"/></svg><div class="cd-text"><b class="cd-left"></b></div></div><div class="bar"><div class="fill cd-bar"></div></div>`;
+    }
+    const pct = totalMs > 0 ? Math.min(1, Math.max(0, 1 - leftMs / totalMs)) : 0;
+    setText($('.cd-left', el), clock(leftMs) + ' left');
+    $('.cd-fill', el).style.strokeDashoffset = String(CD_C * (1 - pct));
+    $('.cd-bar', el).style.width = (pct * 100).toFixed(1) + '%';
+  }
   const setText = (el, t) => {
     if (el.textContent !== t) el.textContent = t;
   };
@@ -37,6 +56,8 @@
     errors: [],
     debuglog: [],
     ignored: [],
+    done: [],
+    tags: { defs: [], assign: {} },
     lastSession: null,
     settings: {},
     rawFirstResponse: null,
@@ -102,9 +123,10 @@
       back.className = 'modal-back';
       back.innerHTML = `<div class="modal" role="dialog" aria-modal="true"><h2>${esc(o.title)}</h2><div class="body">${o.body || ''}</div><div class="actions"></div></div>`;
       const finish = (v) => {
+        const data = o.collect ? o.collect(back) : undefined;
         document.removeEventListener('keydown', onKey);
         back.remove();
-        resolve(v);
+        resolve(o.collect ? { value: v, data } : v);
       };
       const onKey = (e) => {
         if (e.key === 'Escape') finish(null);
@@ -195,6 +217,37 @@
     return { tabs, loaded };
   }
 
+  /**
+   * Like pingAll, but if Instagram tabs are open without the extension active
+   * (opened before install/reload), refresh them automatically and wait.
+   */
+  async function pingAllAuto() {
+    let r = await pingAll();
+    if (!r.tabs.length || r.loaded.length) return r;
+    toast('Refreshing the Instagram tab...');
+    await Promise.all(r.tabs.map((t) => new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        chrome.tabs.onUpdated.removeListener(on);
+        resolve();
+      };
+      const on = (id, info) => {
+        if (id === t.id && info.status === 'complete') finish();
+      };
+      chrome.tabs.onUpdated.addListener(on);
+      chrome.tabs.reload(t.id).catch(finish);
+      setTimeout(finish, 25000);
+    })));
+    for (let i = 0; i < 6; i++) {
+      await new Promise((res) => setTimeout(res, 1000));
+      r = await pingAll();
+      if (r.loaded.length) break;
+    }
+    return r;
+  }
+
   let pingBusy = false;
   async function refreshPing() {
     if (pingBusy) return;
@@ -211,14 +264,33 @@
       renderAccount();
       renderBanners();
       renderControls();
+      refreshPending(loaded[0]);
     } finally {
       pingBusy = false;
     }
   }
 
+  /** Follow-request count: one small request, at most every 10 minutes. */
+  let pendingBusy = false;
+  async function refreshPending(target) {
+    if (!target || pendingBusy || S.ping.scanning || S.ping.mock) return;
+    if (S.pending && Date.now() - S.pending.ts < 10 * 60000) return;
+    pendingBusy = true;
+    try {
+      const r = await sendTab(target.tab.id, { type: 'ig:cmd', cmd: 'pending' }, 20000);
+      const pending = { count: r && r.ok ? r.count : null, ts: Date.now() };
+      if (pending.count != null) await chrome.storage.local.set({ pending });
+      else S.pending = { count: S.pending ? S.pending.count : null, ts: pending.ts };
+    } catch (e) {
+      /* tab not ready; try again on a later ping */
+    } finally {
+      pendingBusy = false;
+    }
+  }
+
   /** Pre-flight steps 1 and 2 (tab open, content script loaded). */
   async function gatherTabs() {
-    const { tabs, loaded } = await pingAll();
+    const { tabs, loaded } = await pingAllAuto();
     const steps = [];
     const open = tabs.length > 0;
     steps.push({
@@ -320,7 +392,7 @@
   }
 
   async function scanningTab() {
-    const { loaded } = await pingAll();
+    const { loaded } = await pingAllAuto();
     return loaded.find((l) => l.ping.scanning) || loaded[0] || null;
   }
 
@@ -436,7 +508,50 @@
   }
 
   // --------------------------------------------------------------- renders
+  /** Gradient header: handle, follower / following totals, avatar initial. */
+  function renderHero() {
+    const d = derived();
+    const acct = d.sc && d.progress && d.sc.account ? d.sc.account : S.lastSession;
+    const name = acct ? acct.username : '';
+    setText($('#heroHandle'), name ? `@ ${name}` : 'Not checked yet. Press Start scan.');
+    setText($('#heroAvatar'), name ? name.replace(/^user /, '#')[0] : '?');
+    let f = null;
+    let g = null;
+    if (d.sc && d.sc.counts) {
+      f = d.sc.counts.followers;
+      g = d.sc.counts.following;
+    } else if (S.results && S.results.checks) {
+      f = S.results.checks.followers.collected;
+      g = S.results.checks.following.collected;
+    }
+    const imp = S.importResults;
+    if (f == null && g == null && imp && imp.counts) {
+      f = imp.counts.followers;
+      g = imp.counts.following;
+      if (imp.username) setText($('#heroHandle'), `@ ${imp.username}`);
+    }
+    setText($('#heroFollowers'), f == null ? '–' : fmt(f));
+    setText($('#heroFollowing'), g == null ? '–' : fmt(g));
+  }
+
+  /** Four simple tiles, shown once results exist. */
+  function renderStats() {
+    const res = currentResults();
+    $('#stats').hidden = !res;
+    if (!res) return;
+    const ignored = new Set(S.ignored);
+    setText($('#statNon'), fmt(res.data.nonFollowers.filter((u) => !ignored.has(keyOf(u))).length));
+    const lst = (arr, fallback) => (Array.isArray(arr) ? fmt(arr.filter((u) => !ignored.has(keyOf(u))).length) : fallback == null ? '–' : fmt(fallback));
+    // quick-check results: show the totals Instagram gives (the lists may include a few disabled accounts)
+    const totals = res.kind === 'import' && res.data.fansUnknown && res.data.counts;
+    setText($('#statFollowers'), totals && res.data.counts.followers != null ? fmt(res.data.counts.followers) : lst(res.data.followers, res.data.counts && res.data.counts.followers));
+    setText($('#statFollowing'), totals && res.data.counts.following != null ? fmt(res.data.counts.following) : lst(res.data.following, res.data.counts && res.data.counts.following));
+    setText($('#statFans'), res.data.fansUnknown ? (res.data.fansCount == null ? '–' : fmt(res.data.fansCount)) : fmt(res.data.fans.filter((u) => !ignored.has(keyOf(u))).length));
+    $$('#stats button.tile').forEach((b) => b.classList.toggle('active', b.dataset.sub === S.sub));
+  }
+
   function renderAccount() {
+    renderHero();
     const d = derived();
     const el = $('#accountBar');
     let html;
@@ -546,6 +661,8 @@
       if (p.ok) html += '<li class="ok"><span class="mark">&#10003;</span><div>All checks passed</div></li>';
     }
     if (ul.innerHTML !== html) ul.innerHTML = html;
+    // Shown below the controls once a check has run, so any failing step is easy to spot.
+    $('#preflightCard').hidden = !p;
   }
 
   function renderControls() {
@@ -627,47 +744,40 @@
     const errWait = sc.waitReason === 'rate_limit' || sc.waitReason === 'network_retry';
     let pill = ['Idle', ''];
     let status = sc.statusText || '';
-    let eta = '';
     switch (d.eff) {
       case 'running':
         pill = ['Running', 'pill-ok'];
         if (errWait && waiting) {
-          eta = `Waiting, resuming in ${waiting}s`;
+          status += ` (resuming in ${waiting}s)`;
           pill = ['Waiting', 'pill-warn'];
-        } else if (sc.waitReason === 'offline') {
-          eta = 'Waiting for the connection';
         } else {
-          eta = Sh.etaText(sc.eta);
           if (waiting && sc.waitReason === 'long_pause') status += ` (${waiting}s left)`;
         }
         break;
       case 'stalled':
         pill = ['Stalled', 'pill-warn'];
         status = 'Scan not responding';
-        eta = 'Paused';
         break;
       case 'paused':
         pill = sc.pauseReason === 'error' ? ['Paused on error', 'pill-err'] : sc.pauseReason === 'interrupted' ? ['Interrupted', 'pill-warn'] : ['Paused', 'pill-warn'];
-        eta = 'Paused';
         break;
       case 'complete':
         pill = ['Complete', 'pill-ok'];
-        eta = 'Done';
         break;
       case 'cancelled':
       case 'idle':
         pill = ['Cancelled', ''];
-        eta = 'Not running';
         break;
     }
     const pillEl = $('#statusPill');
     setText(pillEl, pill[0]);
     pillEl.className = 'pill ' + pill[1];
-    setText($('#etaText'), eta);
+    const scanCd = $('#scanCd');
+    const cdLeft = d.eff === 'running' && !(errWait && waiting) && sc.waitReason !== 'offline' && sc.eta && !sc.eta.calculating && sc.eta.ms != null ? Math.max(0, sc.eta.computedAt + sc.eta.ms - d.now) : null;
+    scanCd.hidden = cdLeft == null;
+    if (cdLeft != null) cdUpdate(scanCd, cdLeft, sc.sessionActiveMs + (sc.lastTickAt ? Math.min(d.now - sc.lastTickAt, 60000) : 0) + cdLeft);
     setText($('#statusText'), status);
     $('#bgText').hidden = !(d.eff === 'running' && sc.tabHidden);
-    const extra = d.eff === 'running' && sc.lastTickAt ? Math.min(d.now - sc.lastTickAt, 60000) : 0;
-    setText($('#timeText'), `This session: ${Sh.formatDuration(sc.sessionActiveMs + extra)} · Total scanning time so far: ${Sh.formatDuration(sc.totalActiveMs + extra)}`);
     setText($('#progressTitle'), d.eff === 'complete' ? 'Scan finished' : 'Progress');
   }
 
@@ -691,14 +801,40 @@
   }
 
   const keyOf = (u) => String(u.id);
-  let V = { items: [], showHidden: false };
+  /** Tags are stored per Instagram username (lowercase), so they survive rescans and imports. */
+  const tagKey = (u) => String(u.u || '').toLowerCase();
+  const tagsOf = (u) => {
+    const ids = (S.tags.assign || {})[tagKey(u)] || [];
+    return ids.map((id) => S.tags.defs.find((t) => t.id === id)).filter(Boolean);
+  };
+  async function saveTags() {
+    await chrome.storage.local.set({ tags: S.tags });
+    renderResults();
+  }
+  /** The list behind a results tab: 'non' | 'fans' | 'pending' (sent follow requests, import only). */
+  const listOf = (res, sub) =>
+    sub === 'non'
+      ? res.data.nonFollowers
+      : sub === 'fans'
+      ? res.data.fans
+      : sub === 'followers'
+      ? res.data.followers || []
+      : sub === 'following'
+      ? res.data.following || []
+      : sub === 'new'
+      ? res.data.newFollowers || []
+      : sub === 'lost'
+      ? res.data.lostFollowers || []
+      : res.data.pending || [];
+  const FOLLOWER_SUBS = ['followers', 'following', 'new', 'lost'];
+  let V = { items: [], showHidden: false, fanIds: new Set() };
 
   function computeList(res) {
     const ignored = new Set(S.ignored);
-    const base = S.sub === 'non' ? res.data.nonFollowers : res.data.fans;
-    const q = S.search.trim().toLowerCase();
+    const base = listOf(res, S.sub);
+    const q =S.search.trim().toLowerCase();
     let list = base.filter((u) => ignored.has(keyOf(u)) === S.showHidden);
-    if (q) list = list.filter((u) => u.u.toLowerCase().includes(q) || (u.n || '').toLowerCase().includes(q));
+    if (q) list = list.filter((u) => u.u.toLowerCase().includes(q) || (u.n || '').toLowerCase().includes(q) || tagsOf(u).some((t) => t.name.toLowerCase().includes(q)));
     list = list.slice().sort((x, y) => x.u.toLowerCase().localeCompare(y.u.toLowerCase()));
     if (S.sort === 'desc') list.reverse();
     return { list, ignored, base };
@@ -707,6 +843,11 @@
   function resBanners(res) {
     const d = res.data;
     const out = [];
+    if (res.kind === 'scan' && ['followers', 'new', 'lost'].includes(S.sub)) {
+      if (!d.followersDiffTrusted) out.push('<div class="banner err">The followers list was incomplete in this scan, so new/lost followers are not shown. Re-scan followers and try again.</div>');
+      else if (S.sub !== 'followers' && !d.followersSince) out.push('<div class="banner">This is your first saved scan. Scan again later and the people who followed or unfollowed you since then will show up here.</div>');
+      else if (S.sub !== 'followers') out.push(`<div class="banner">Changes since your previous scan (${Sh.timeAgo(d.followersSince)}): <strong>${fmt((d.newFollowers || []).length)}</strong> new, <strong>${fmt((d.lostFollowers || []).length)}</strong> lost. Lost can also mean the person deactivated or blocked you.</div>`);
+    }
     if (res.kind === 'scan') {
       d.incomplete.forEach((inc) => {
         const label = inc.phase === 'followers' ? 'Followers' : 'Following';
@@ -714,15 +855,19 @@
           `<div class="banner err"><strong>INCOMPLETE_DATA</strong>${label}: collected ${fmt(inc.collected)} of ${fmt(inc.expected)}, results may be incomplete.<br><button class="btn btn-small" data-act="rescan" data-phase="${inc.phase}">Re-scan ${label.toLowerCase()}</button></div>`
         );
       });
-      if (d.countsUnavailable) out.push('<div class="banner warn"><strong>Completeness not verified</strong>The profile totals could not be read, so the lists could not be checked.</div>');
-      if (d.stale24h) out.push('<div class="banner">The Followers and Following lists were collected more than 24 hours apart, so small inaccuracies are possible.</div>');
     } else {
+      if (d.fansUnknown) {
+        out.push(`<div class="banner">${d.fansCount == null ? '' : `<strong>${fmt(d.fansCount)}</strong> of your followers are people you don't follow back ${d.fansNamed ? `(their names are listed in the "Not followed back by me" tab; the list can include a few disabled accounts that Instagram does not count)` : `(count only: Instagram does not provide your followers list, so they can't be named)`}.<br>`}${d.fansNote ? `${esc(d.fansNote)}<br>` : ''}<strong>${fmt(d.nonFollowers.length)}</strong> people you follow don't follow you back (listed below).</div>`);
+        return out.join('');
+      }
       out.push('<div class="banner">Imported from an Instagram data export. Matched by <strong>username</strong> (the export has no numeric IDs), so renamed accounts may be wrong.</div>');
     }
     return out.join('');
   }
 
   function renderResults() {
+    renderStats();
+    renderHero();
     const res = currentResults();
     const d = derived();
     const empty = $('#resEmpty');
@@ -747,16 +892,39 @@
     }
 
     const ignored = new Set(S.ignored);
+    const doneSet = new Set(S.done);
     const visibleNon = res.data.nonFollowers.filter((u) => !ignored.has(keyOf(u))).length;
     const visibleFans = res.data.fans.filter((u) => !ignored.has(keyOf(u))).length;
-    const hiddenHere = (S.sub === 'non' ? res.data.nonFollowers : res.data.fans).filter((u) => ignored.has(keyOf(u))).length;
+    const hiddenHere = listOf(res, S.sub).filter((u) => ignored.has(keyOf(u))).length;
     const flag = res.kind === 'scan' && res.data.incomplete.length ? ' (may be incomplete)' : '';
-    setText($('#resCount'), `${fmt(visibleNon)} ${visibleNon === 1 ? "person doesn't" : "people don't"} follow you back${flag}`);
+    const hasFollowers = res.kind === 'scan' && Array.isArray(res.data.followers);
+    const listTab = res.kind === 'import' && res.data.fansUnknown && ['followers', 'following'].includes(S.sub);
+    if (!hasFollowers && !listTab && FOLLOWER_SUBS.includes(S.sub)) S.sub = 'non';
+    const n = (arr) => (arr || []).filter((u) => !ignored.has(keyOf(u))).length;
+    const countLine = {
+      following: () => `${fmt(n(res.data.following))} following${flag}`,
+      fans: () => {
+        const f = res.data.fansUnknown && res.data.fansCount != null ? res.data.fansCount : visibleFans;
+        return `${fmt(f)} ${f === 1 ? 'follower' : 'followers'} you don't follow back`;
+      },
+      followers: () => res.kind === 'import' && res.data.fansUnknown && res.data.counts.followers != null ? `${fmt(res.data.counts.followers)} followers` : `${fmt(n(res.data.followers))} ${n(res.data.followers) === 1 ? 'follower' : 'followers'}${flag}`,
+      new: () => `${fmt(n(res.data.newFollowers))} new ${n(res.data.newFollowers) === 1 ? 'follower' : 'followers'} since last scan`,
+      lost: () => `${fmt(n(res.data.lostFollowers))} lost ${n(res.data.lostFollowers) === 1 ? 'follower' : 'followers'} since last scan`,
+    }[S.sub];
+    setText($('#resCount'), countLine && (hasFollowers || listTab || S.sub === 'fans') ? countLine() : `${fmt(visibleNon)} ${visibleNon === 1 ? "person doesn't" : "people don't"} follow you back${flag}`);
+    $('#subtabs').hidden = !hasFollowers || !['new', 'lost'].includes(S.sub);
+    if (hasFollowers) {
+      setText($('#cntFollowers'), fmt(n(res.data.followers)));
+      setText($('#cntNew'), fmt(n(res.data.newFollowers)));
+      setText($('#cntLost'), fmt(n(res.data.lostFollowers)));
+    }
     const checks = res.data.checks;
     setText(
       $('#resMeta'),
       res.kind === 'scan'
         ? `@${res.data.username} · ${Sh.timeAgo(res.data.computedAt)} · ${fmt(checks.followers.collected)} followers, ${fmt(checks.following.collected)} following${S.ignored.length ? ` · ${fmt(hiddenCount(res))} hidden` : ''}`
+        : res.data.fansUnknown
+        ? `${res.data.counts.followers == null ? '' : fmt(res.data.counts.followers) + ' followers · '}${fmt(res.data.counts.following)} following · ${fmt(res.data.mutualCount)} follow you back${res.data.fansCount == null ? '' : ` · ${fmt(res.data.fansCount)} followers you don't follow back`} · ${Sh.timeAgo(res.data.computedAt)}`
         : `Data export · ${Sh.timeAgo(res.data.computedAt)} · ${fmt(res.data.counts.followers)} followers, ${fmt(res.data.counts.following)} following`
     );
     const rb = resBanners(res);
@@ -765,6 +933,9 @@
     setText($('#cntFans'), fmt(visibleFans));
     $$('.subtab').forEach((b) => b.classList.toggle('active', b.dataset.sub === S.sub));
     setText($('#btnHidden'), S.showHidden ? 'Back to list' : `Hidden (${fmt(hiddenHere)})`);
+    const doneHere = listOf(res, S.sub).filter((u) => doneSet.has(keyOf(u)) && !ignored.has(keyOf(u))).length;
+    const totalHere = listOf(res, S.sub).filter((u) => !ignored.has(keyOf(u))).length;
+    setText($('#doneCount'), `${fmt(doneHere)} of ${fmt(totalHere)} done`);
     setText($('#btnSort'), S.sort === 'asc' ? 'A → Z' : 'Z → A');
     renderList();
   }
@@ -782,13 +953,13 @@
     const res = currentResults();
     if (!res) return;
     const { list } = computeList(res);
-    V = { items: list, showHidden: S.showHidden };
+    V = { items: list, showHidden: S.showHidden, fanIds: new Set((res.data.fans || []).map(keyOf)) };
     const wrap = $('#listWrap');
     if (!keepScroll) wrap.scrollTop = 0;
-    $('#listSpacer').style.height = Math.max(list.length * ROW_H, 0) + 'px';
+    $('#listSpacer').style.height = 'auto';
     if (!list.length) {
-      $('#listRows').innerHTML = `<div class="empty">${S.showHidden ? 'No hidden accounts.' : S.search ? 'No matches.' : S.sub === 'fans' ? 'No fans: you follow everyone who follows you.' : 'Everyone you follow follows you back.'}</div>`;
-      $('#listSpacer').style.height = '120px';
+      $('#listRows').innerHTML = `<div class="empty">${S.showHidden ? 'No hidden accounts.' : S.search ? 'No matches.' : S.sub === 'fans' ? (res.data.fansUnknown && !res.data.fansNamed ? res.data.fansNote || "Names aren't available: run the quick check again from your profile page." : 'No fans: you follow everyone who follows you.') : (S.sub === 'followers' || S.sub === 'following') && res.data.fansUnknown && !(res.data[S.sub] && res.data[S.sub].length) ? 'Run the quick check again to load this list.' : S.sub === 'followers' ? 'No followers.' : S.sub === 'new' ? 'No new followers since your previous scan.' : S.sub === 'lost' ? 'Nobody unfollowed you since your previous scan.' : S.sub === 'pending' ? 'No sent follow requests found. Import pending_follow_requests.json from your Instagram data export.' : 'Everyone you follow follows you back.'}</div>`;
+      $('#listSpacer').style.height = 'auto';
       $('#listRows').style.transform = 'none';
       return;
     }
@@ -799,26 +970,21 @@
     const wrap = $('#listWrap');
     const items = V.items;
     if (!items.length) return;
-    const first = Math.max(0, Math.floor(wrap.scrollTop / ROW_H) - 6);
-    const last = Math.min(items.length, first + Math.ceil((wrap.clientHeight || 400) / ROW_H) + 12);
+    // Whole list is rendered; the page itself scrolls (one scrollbar).
+    const first = 0;
+    const last = items.length;
+    const doneSet = new Set(S.done);
     let html = '';
     for (let i = first; i < last; i++) {
       const u = items[i];
       const pic = /^https:\/\//.test(u.p || '') ? u.p : PLACEHOLDER;
       const href = `https://www.instagram.com/${encodeURIComponent(u.u)}/`;
-      html += `<div class="row-item"><img class="avatar" src="${esc(pic)}" referrerpolicy="no-referrer" loading="lazy" alt=""><div class="who-col"><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">@${esc(u.u)}</a><span>${esc(u.n || '')}</span></div><button class="btn btn-small" data-act="${V.showHidden ? 'unhide' : 'hide'}" data-key="${esc(keyOf(u))}">${V.showHidden ? 'Unhide' : 'Hide'}</button></div>`;
+      const isDone = doneSet.has(keyOf(u));
+      html += `<div class="row-item${isDone ? ' done' : ''}"><input type="checkbox" class="chk" data-act="toggleDone" data-key="${esc(keyOf(u))}"${isDone ? ' checked' : ''} aria-label="Mark @${esc(u.u)} as done"><img class="avatar" src="${esc(pic)}" referrerpolicy="no-referrer" loading="lazy" alt=""><div class="who-col"><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">@${esc(u.u)}</a><span>${esc(u.n || '')}</span></div><div class="tags">${S.sub === 'followers' && V.fanIds.has(keyOf(u)) ? '<span class="tag-chip" style="background:#8e8e8e">not followed back</span>' : ''}${tagsOf(u).map((t) => `<span class="tag-chip" style="background:${esc(t.color)}">${esc(t.name)}</span>`).join('')}</div>${V.showHidden ? `<button class="btn btn-small" data-act="unhide" data-key="${esc(keyOf(u))}">Unhide</button>` : S.sub === 'pending' ? '' : `<button class="btn btn-small${S.sub === 'non' ? ' btn-danger' : ''}" data-act="friend" data-key="${esc(keyOf(u))}">${S.sub === 'non' ? 'Unfollow' : 'Follow'}</button>`}</div>`;
     }
     const rows = $('#listRows');
-    rows.style.transform = `translateY(${first * ROW_H}px)`;
+    rows.style.transform = 'none';
     rows.innerHTML = html;
-  }
-
-  function visibleListForExport() {
-    const res = currentResults();
-    if (!res) return [];
-    const ignored = new Set(S.ignored);
-    const base = S.sub === 'non' ? res.data.nonFollowers : res.data.fans;
-    return base.filter((u) => !ignored.has(keyOf(u))).sort((x, y) => x.u.toLowerCase().localeCompare(y.u.toLowerCase()));
   }
 
   async function setIgnored(list) {
@@ -903,6 +1069,70 @@
     $('#btnImport').disabled = !files.length;
   }
 
+  let quickEtaAt = null; // epoch ms when the quick check is expected to finish
+  async function runQuick() {
+    const msg = $('#quickMsg');
+    const btn = $('#btnQuick');
+    btn.disabled = true;
+    msg.textContent = 'Starting...';
+    const startedAt = Date.now();
+    const timer = $('#quickTimer');
+    quickEtaAt = null;
+    timer.textContent = 'Calculating time left...';
+    const cd = $('#quickCd');
+    cd.hidden = true;
+    const paint = () => {
+      if (!quickEtaAt) {
+        timer.textContent = 'Calculating time left...';
+        return;
+      }
+      timer.textContent = '';
+      cd.hidden = false;
+      const left = Math.max(0, quickEtaAt - Date.now());
+      cdUpdate(cd, left, Date.now() - startedAt + left);
+    };
+    const tick = setInterval(paint, 1000);
+    try {
+      const { loaded } = await pingAllAuto();
+      const t = loaded[0];
+      if (!t) throw new Error('No Instagram tab with the extension was found. Open instagram.com in a tab and try again.');
+      await chrome.tabs.update(t.tab.id, { active: true });
+      const r = await sendTab(t.tab.id, { type: 'ig:cmd', cmd: 'quick', args: { fresh: !!(btn.dataset.fresh) } }, 3 * 60 * 60 * 1000);
+      if (!r || !r.ok) throw new Error((r && r.message) || 'Quick check failed.');
+      const importResults = {
+        source: 'import',
+        computedAt: Date.now(),
+        username: r.username || '',
+        counts: { followers: r.followersCount, following: r.followingCount },
+        files: { followers: 0, following: 0 },
+        skipped: [],
+        nonFollowers: r.nonFollowers,
+        following: r.following || [],
+        followers: r.followerNames ? r.followerNames.map((f) => ({ id: 'u:' + f.u.toLowerCase(), u: f.u, n: '', p: '' })) : undefined,
+        fans: r.fans || [],
+        fansNamed: !!r.fans,
+        fansNote: r.fansNote || '',
+        fansUnknown: true,
+        // followers you don't follow back = all followers minus the ones you follow back (count only, no names)
+        fansCount: r.followersCount == null ? null : Math.max(0, r.followersCount - r.mutualCount),
+        pending: r.pending || [],
+        mutualCount: r.mutualCount,
+      };
+      await chrome.storage.local.set({ importResults });
+      S.source = 'import';
+      S.sub = 'non';
+      msg.textContent = `Done. ${fmt(r.nonFollowers.length)} of ${fmt(r.followingCount)} accounts you follow don't follow you back. ${fmt(r.mutualCount)} follow you back.${r.followersCount == null ? '' : ` ${fmt(Math.max(0, r.followersCount - r.mutualCount))} of your followers you don't follow back.`} ${fmt((r.pending || []).length)} follow requests. ${r.pendingNote || ''}`;
+      switchTab('results');
+    } catch (e) {
+      msg.textContent = `Quick check failed: ${e.message}`;
+    } finally {
+      clearInterval(tick);
+      cd.hidden = true;
+      timer.textContent = `Finished in ${clock(Date.now() - startedAt)}`;
+      btn.disabled = false;
+    }
+  }
+
   async function runImport() {
     const msg = $('#importMsg');
     msg.innerHTML = '';
@@ -918,6 +1148,7 @@
         skipped: parsed.skipped,
         nonFollowers: cmp.nonFollowers,
         fans: cmp.fans,
+        pending: parsed.pending.length ? Sh.computeByUsernames(parsed.pending, []).fans : null,
         mutualCount: cmp.mutualCount,
       };
       await chrome.storage.local.set({ importResults });
@@ -994,6 +1225,12 @@
       setTimeout(refreshPing, 2500);
     },
     viewErrors: () => switchTab('errors'),
+    goResults: (el) => {
+      S.sub = el.dataset.sub || 'non';
+      S.showHidden = false;
+      switchTab('results');
+      renderResults();
+    },
     sort: () => {
       S.sort = S.sort === 'asc' ? 'desc' : 'asc';
       renderResults();
@@ -1002,21 +1239,136 @@
       S.showHidden = !S.showHidden;
       renderResults();
     },
+    friend: async (el) => {
+      const id = el.dataset.key;
+      const action = S.sub === 'non' ? 'unfollow' : 'follow';
+      const res = currentResults();
+      const u = res && listOf(res, S.sub).find((x) => keyOf(x) === id);
+      if (!u) return;
+      if (action === 'unfollow') {
+        const c = await modal({
+          title: `Unfollow @${u.u}?`,
+          body: '<p>This unfollows the account on Instagram right now.</p>',
+          buttons: [{ label: 'Cancel', value: null }, { label: 'Unfollow', value: 'go', danger: true }],
+        });
+        if (c !== 'go') return;
+      }
+      el.disabled = true;
+      el.textContent = '...';
+      try {
+        const t = await scanningTab();
+        if (!t) throw new Error('No Instagram tab with the extension was found.');
+        const r = await sendTab(t.tab.id, { type: 'ig:cmd', cmd: 'friend', args: { action, id } }, 30000);
+        if (!r || !r.ok) throw new Error((r && r.message) || 'Failed');
+        // Update the saved results so the lists and tiles stay correct.
+        const d = res.data;
+        const next = Object.assign({}, d);
+        if (action === 'unfollow') next.nonFollowers = d.nonFollowers.filter((x) => keyOf(x) !== id);
+        else {
+          next.fans = d.fans.filter((x) => keyOf(x) !== id);
+          next.mutualCount = d.mutualCount + 1;
+        }
+        await chrome.storage.local.set({ [res.kind === 'scan' ? 'results' : 'importResults']: next });
+        toast(action === 'unfollow' ? `Unfollowed @${u.u}` : r.requested ? `Follow request sent to @${u.u}` : `Followed @${u.u}`);
+      } catch (e) {
+        toast(e.message);
+        renderList(true);
+      }
+    },
+    toggleDone: async (el) => {
+      const id = el.dataset.key;
+      S.done = el.checked ? Array.from(new Set(S.done.concat(id))) : S.done.filter((k) => k !== id);
+      await chrome.storage.local.set({ done: S.done });
+      renderResults();
+    },
+    addTag: async () => {
+      const res = currentResults();
+      if (!res) return;
+      const done = new Set(S.done);
+      const picked = listOf(res, S.sub).filter((u) => done.has(keyOf(u)));
+      if (!picked.length) return toast('Tick some accounts first, then press Add tag.');
+      const defs = S.tags.defs;
+      const r = await modal({
+        title: `Tag ${fmt(picked.length)} selected ${picked.length === 1 ? 'account' : 'accounts'}`,
+        body: `<label class="tag-field">Existing tag<select id="tagPick"><option value="">Choose...</option>${defs.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select></label><label class="tag-field">Or create a new tag<input id="tagNew" type="text" maxlength="24" placeholder="e.g. Unfollow, Friends, Later"></label>`,
+        buttons: [{ label: 'Cancel', value: null }].concat(defs.length ? [{ label: 'Remove this tag', value: 'remove', danger: true }] : [], [{ label: 'Add tag', value: 'add', primary: true }]),
+        collect: (root) => ({ pick: $('#tagPick', root).value, name: $('#tagNew', root).value.trim() }),
+      });
+      if (!r || !r.value) return;
+      const tags = { defs: S.tags.defs.slice(), assign: Object.assign({}, S.tags.assign) };
+      let tag = null;
+      if (r.data.name && r.value === 'add') {
+        tag = tags.defs.find((t) => t.name.toLowerCase() === r.data.name.toLowerCase());
+        if (!tag) {
+          tag = { id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: r.data.name, color: `hsl(${Math.floor(Math.random() * 360)}, 65%, 42%)` };
+          tags.defs.push(tag);
+        }
+      } else {
+        tag = tags.defs.find((t) => t.id === r.data.pick);
+      }
+      if (!tag) return toast(r.value === 'remove' ? 'Choose the tag to remove.' : 'Choose a tag or type a new name.');
+      picked.forEach((u) => {
+        const k = tagKey(u);
+        const cur = (tags.assign[k] || []).filter((id) => id !== tag.id);
+        if (r.value === 'add') cur.push(tag.id);
+        if (cur.length) tags.assign[k] = cur;
+        else delete tags.assign[k];
+      });
+      S.tags = tags;
+      await saveTags();
+      toast(r.value === 'add' ? `Tagged ${fmt(picked.length)} with "${tag.name}"` : `Removed "${tag.name}" from ${fmt(picked.length)}`);
+    },
+    clearDone: async () => {
+      if (!S.done.length) return;
+      const c = await modal({
+        title: 'Clear all checkmarks?',
+        body: '<p>This unticks every account you marked as done.</p>',
+        buttons: [{ label: 'Cancel', value: null }, { label: 'Clear', value: 'go', danger: true }],
+      });
+      if (c !== 'go') return;
+      S.done = [];
+      await chrome.storage.local.set({ done: [] });
+      renderResults();
+    },
     hide: (el) => setIgnored(Array.from(new Set(S.ignored.concat(el.dataset.key)))),
     unhide: (el) => setIgnored(S.ignored.filter((k) => k !== el.dataset.key)),
-    exportCsv: () => {
-      const rows = visibleListForExport();
-      if (!rows.length) return toast('Nothing to export.');
-      const name = `instagram-${S.sub === 'non' ? 'non-followers' : 'fans'}-${new Date().toISOString().slice(0, 10)}.csv`;
-      download(name, Sh.toCsv(rows), 'text/csv;charset=utf-8');
-      toast(`Exported ${fmt(rows.length)} accounts.`);
-    },
-    copyUsernames: async () => {
-      const rows = visibleListForExport();
-      if (!rows.length) return toast('Nothing to copy.');
-      toast((await copyText(rows.map((r) => r.u).join('\n'))) ? `Copied ${fmt(rows.length)} usernames.` : 'Copy failed.');
-    },
     rescan: (el) => startScan('resume', { rescan: el.dataset.phase }).then(() => switchTab('scan')),
+    exportNon: () => {
+      const res = currentResults();
+      if (!res) return;
+      const ignored = new Set(S.ignored);
+      const pick = (arr) =>
+        (arr || [])
+          .filter((u) => !ignored.has(keyOf(u)))
+          .sort((a, b) => a.u.toLowerCase().localeCompare(b.u.toLowerCase()));
+      const me = res.data.username || 'instagram';
+      const day = new Date().toISOString().slice(0, 10);
+      const section = (title, desc, arr, unavailable) => {
+        const users = pick(arr);
+        const lines = [`## ${title} (${unavailable ? 'not available' : users.length})`, '', desc, ''];
+        if (unavailable) lines.push('_This list is not available in this data source._');
+        else if (!users.length) lines.push('_None._');
+        else users.forEach((u) => lines.push(u.u));
+        lines.push('');
+        return lines;
+      };
+      const md = [
+        `# Instagram account @${me}`,
+        '',
+        `Exported: ${day}`,
+        '',
+        `This file has two lists for @${me}. Each line is one Instagram username. Use it to take actions (for example unfollowing) in the browser where @${me} is logged in to Instagram. Confirm with the owner before doing anything.`,
+        '',
+        ...section('Not following back', "People I follow who don't follow me back.", res.data.nonFollowers),
+        ...section('Not followed back by me', "People who follow me but I don't follow back.", res.data.fans, res.data.fansUnknown && !res.data.fansNamed),
+      ].join('\n');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
+      a.download = `${me.replace(/[^\w.-]/g, '_')}.md`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      toast(`Exported ${me}.md`);
+    },
     copyErrors: async () => {
       if (!S.errors.length) return toast('The error log is empty.');
       toast((await copyText(S.errors.map(errorText).join('\n\n'))) ? 'Error log copied.' : 'Copy failed.');
@@ -1070,6 +1422,7 @@
     },
     copyDebug: async () => toast((await copyText(S.debuglog.join('\n'))) ? 'Request log copied.' : 'Copy failed.'),
     import: runImport,
+    quick: runQuick,
   };
 
   document.addEventListener('click', (e) => {
@@ -1124,6 +1477,11 @@
   // ------------------------------------------------------------ live state
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    if (changes.quickProgress && changes.quickProgress.newValue) {
+      const qp = changes.quickProgress.newValue;
+      setText($('#quickMsg'), qp.text);
+      quickEtaAt = qp.etaMs == null ? null : qp.ts + qp.etaMs;
+    }
     const touched = new Set();
     Object.keys(changes).forEach((k) => {
       if (!KEYS.includes(k)) return;
@@ -1140,7 +1498,8 @@
       }
     }
     if (touched.has('lastSession')) renderAccount();
-    if (touched.has('results') || touched.has('importResults') || touched.has('ignored')) renderResults();
+    if (touched.has('pending')) renderStats();
+    if (touched.has('results') || touched.has('importResults') || touched.has('ignored') || touched.has('done') || touched.has('tags')) renderResults();
     if (touched.has('errors')) renderErrors();
     if (touched.has('debuglog') || touched.has('rawFirstResponse')) renderDebug();
     if (touched.has('ack')) renderScan();
@@ -1162,6 +1521,7 @@
     sel.innerHTML = Object.keys(IGMock.SCENARIOS)
       .map((k) => `<option value="${k}">${esc(k)}: ${esc(IGMock.SCENARIOS[k])}</option>`)
       .join('');
+    $('#verBadge').textContent = 'v' + chrome.runtime.getManifest().version;
     renderAll();
     chrome.runtime.sendMessage({ type: 'ig:clearBadge' }).catch(() => {});
     refreshPing();

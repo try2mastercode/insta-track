@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Insta-Track",
-  "version": "1.0.0",
+  "version": "1.1.19",
   "description": "Lists the accounts you follow that do not follow you back. Fully local, resumable, and shows every failure openly.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "unlimitedStorage", "sidePanel", "alarms", "notifications", "power", "tabs"],
@@ -26,6 +26,12 @@
     "128": "icons/icon128.png"
   },
   "content_scripts": [
+    {
+      "matches": ["https://www.instagram.com/*"],
+      "js": ["page-fetch.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
     {
       "matches": ["https://www.instagram.com/*"],
       "js": ["instagram-api.js", "mock-api.js", "shared.js", "scan-engine.js", "content.js"],

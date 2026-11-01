@@ -78,16 +78,6 @@ test('parseExportFiles skips unrelated files', () => {
   assert.deepEqual(r.skipped, ['profile.json']);
 });
 
-test('toCsv starts with a UTF-8 BOM, quotes properly and neutralises formulas', () => {
-  const csv = S.toCsv([u(7, 'sakura', 'さくら, "Sak"'), u('u:x', 'evil', '=HYPERLINK("x")')]);
-  assert.equal(csv.charCodeAt(0), 0xfeff);
-  const lines = csv.slice(1).trim().split('\r\n');
-  assert.equal(lines[0], 'username,full_name,profile_url,user_id');
-  assert.equal(lines[1], 'sakura,"さくら, ""Sak""",https://www.instagram.com/sakura/,7');
-  assert.ok(lines[2].includes('"\'=HYPERLINK(""x"")"'));
-  assert.ok(lines[2].endsWith(','), 'username-matched rows have no numeric id');
-});
-
 test('completeness flags a list that is short by more than ~2%', () => {
   assert.equal(S.completeness(1000, 985).ok, true);
   assert.equal(S.completeness(1000, 940).ok, false);

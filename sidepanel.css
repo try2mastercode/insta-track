@@ -80,7 +80,7 @@ code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; font-
 main { flex: 1; min-height: 0; position: relative; }
 .pane { display: none; height: 100%; overflow: auto; padding: 10px 12px 24px; }
 .pane.active { display: block; }
-.pane-flex.active { display: flex; flex-direction: column; overflow: hidden; }
+.pane-flex.active { display: flex; flex-direction: column; overflow-y: auto; }
 #resBody { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 /* cards */
@@ -143,8 +143,10 @@ details.dev summary { cursor: pointer; font-weight: 600; }
 /* results */
 .res-head h2 { font-size: 15px; margin: 2px 0; }
 .res-head select { float: right; font-size: 12px; }
-.subtabs { display: flex; gap: 6px; margin: 8px 0; }
-.subtab { flex: 1; background: var(--surface-2); border: 0; padding: 6px; border-radius: 8px; cursor: pointer; font: inherit; color: var(--text); }
+.res-head .btn-export { float: right; margin-left: 6px; padding: 5px 8px; display: inline-flex; align-items: center; }
+.subtab[data-sub="non"], .subtab[data-sub="fans"], .subtab[data-sub="followers"], .subtab[data-sub="following"] { display: none; }
+.subtabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.subtab { flex: 1 1 auto; background: var(--surface-2); border: 0; padding: 6px; border-radius: 8px; cursor: pointer; font: inherit; color: var(--text); }
 .subtab.active { background: var(--surface); box-shadow: 0 0 0 1px var(--accent) inset; font-weight: 600; }
 .tools { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
 .tools input[type="search"] { flex: 1; min-width: 120px; }
@@ -188,3 +190,68 @@ textarea { width: 100%; resize: vertical; }
 }
 .steps .warn .mark { color: var(--warn); }
 .steps .warn .detail { color: var(--warn); }
+
+/* ---- simple dashboard look: gradient header + stat tiles ---- */
+.account { display: none; }
+.hero { background: linear-gradient(135deg, #f0568f, #fd8a4b 60%, #f9c846); color: #fff; border-radius: 14px; padding: 12px 14px 14px; margin-bottom: 10px; text-align: center; }
+.hero-handle { font-weight: 600; font-size: 13px; opacity: 0.95; margin-bottom: 8px; }
+.hero-row { display: flex; align-items: center; justify-content: space-around; gap: 8px; }
+.hero-stat b { display: block; font-size: 18px; line-height: 1.2; }
+.hero-stat span { font-size: 12px; opacity: 0.9; }
+.hero-avatar { width: 56px; height: 56px; border-radius: 50%; background: rgba(255, 255, 255, 0.25); border: 3px solid #fff; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; text-transform: uppercase; }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.tile { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 6px; text-align: center; cursor: default; }
+button.tile { cursor: pointer; }
+button.tile:hover { background: var(--surface-2); }
+.tile b { display: block; font-size: 22px; font-weight: 500; }
+.tile span { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; border-top: 1px solid var(--border); padding-top: 6px; }
+
+/* ---- compact results header so the list gets the space ---- */
+.pane-flex .hero { padding: 8px 12px 10px; margin-bottom: 8px; flex: none; }
+.pane-flex .hero-handle { margin-bottom: 4px; }
+.pane-flex .hero-avatar { width: 40px; height: 40px; font-size: 17px; border-width: 2px; }
+.pane-flex .hero-stat b { font-size: 16px; }
+.pane-flex .tiles { grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px; flex: none; }
+.pane-flex .tile { padding: 8px 2px; }
+.pane-flex .tile b { font-size: 17px; }
+.pane-flex .tile span { font-size: 10px; margin-top: 3px; padding-top: 4px; }
+button.tile.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.list-wrap { min-height: 220px; }
+#resBody { min-height: 300px; }
+
+/* ---- Simple mode: one button, one list (people you follow who do not follow you back) ---- */
+.account,
+.tab[data-tab="errors"], .tab[data-tab="debug"], .tab[data-tab="import"],
+#firstRun, #progressCard, #savedCard, #preflightCard, #banners,
+#pane-scan > .controls,
+#resSource, #btnHidden,
+[data-act="friend"] { display: none !important; }
+
+.row-item .chk { flex: none; width: 18px; height: 18px; margin: 0; cursor: pointer; }
+.row-item.done .who-col { opacity: 0.5; }
+.row-item.done .who-col a { text-decoration: line-through; }
+
+/* Results: one scrollbar. The whole pane scrolls; the list is not a scroller. */
+.pane-flex.active { overflow-y: auto; }
+#resBody { flex: none; }
+.list-wrap { flex: none; min-height: 0; overflow: visible; }
+
+#listRows { position: static !important; transform: none !important; }
+.row-item .tags { display: flex; gap: 4px; flex: none; max-width: 45%; overflow: hidden; margin-left: auto; }
+.tag-chip { color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.tag-field { display: block; margin: 8px 0; font-size: 13px; }
+.tag-field select, .tag-field input { width: 100%; margin-top: 4px; box-sizing: border-box; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+
+/* Animated countdown */
+.cd { margin: 8px 0; }
+.cd-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.cd-ring { width: 56px; height: 56px; flex: none; transform: rotate(-90deg); }
+.cd-track { fill: none; stroke: var(--border); stroke-width: 4; }
+.cd-fill { fill: none; stroke: #f58529; stroke-width: 4; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+.cd-hands { transform-origin: 22px 22px; animation: cd-spin 60s linear infinite; }
+.cd-hands line { stroke: var(--text, #fff); stroke-width: 2; stroke-linecap: round; }
+.cd-dot { fill: var(--text, #fff); }
+.cd-text { display: flex; flex-direction: column; }
+.cd-left { font-size: 20px; font-variant-numeric: tabular-nums; }
+.cd .bar .fill { transition: width 1s linear; }
+@keyframes cd-spin { to { transform: rotate(360deg); } }

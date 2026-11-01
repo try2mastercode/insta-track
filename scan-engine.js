@@ -356,7 +356,16 @@
         push('test', 'Test request returns the expected data', true, `HTTP ${page.raw.status}, JSON shape OK`);
       } catch (e0) {
         const e = asApiError(e0);
-        push('test', 'Test request returns the expected data', false, `${e.code}: ${e.message}`);
+        let diag = '';
+        if (typeof api.diagnose === 'function') {
+          try {
+            diag = ` DIAGNOSTICS: ${await api.diagnose(userId)}`;
+          } catch (e2) {
+            diag = '';
+          }
+        }
+        const seen = diag + (e.snippet ? ` Instagram sent: ${String(e.snippet).replace(/\s+/g, ' ').slice(0, 300)}` : '');
+        push('test', 'Test request returns the expected data', false, `${e.code}: ${e.message} [${e.url || ''}]${seen}`);
         await logError({ phase: 'Pre-flight', batch: 0, err: e });
         await flushDebug();
         return result;
@@ -426,6 +435,13 @@
     async function start(opts) {
       const o = opts || {};
       if (running) return { ok: false, code: 'ALREADY_RUNNING', message: 'A scan is already running in this tab.' };
+      if (o.mode === 'fresh' && !o.rescan) {
+        // The user chose to discard saved progress: drop it right away so the panel shows an empty
+        // scan while the pre-flight runs (which can take a while when Instagram rate limits it).
+        await resetScanData(null);
+        meta.statusText = 'Starting...';
+        await store.set({ scan: meta });
+      }
       const pre = await preflight({ otherTabs: o.otherTabs, takeOver: o.takeOver });
       if (!pre.ok) return { ok: false, code: 'PREFLIGHT_FAILED', steps: pre.steps };
       const account = pre.session;
@@ -737,6 +753,26 @@
         checks[p] = { expected: counts ? counts[p] : null, collected, ok: c.ok, short: c.short };
         if (c.ok === false) incomplete.push({ phase: p, expected: counts[p], collected });
       });
+      // Follower changes since the previous complete scan of this account. A short
+      // followers list would show false "lost" entries, so it neither diffs nor replaces the snapshot.
+      const prevSnap = (await store.get('followersSnapshot')).followersSnapshot;
+      const prev = prevSnap && prevSnap.accountId === meta.account.id ? prevSnap : null;
+      let newFollowers = [];
+      let lostFollowers = [];
+      let followersSince = null;
+      const followersTrusted = checks.followers.ok !== false;
+      if (followersTrusted) {
+        if (prev) {
+          followersSince = prev.ts;
+          const nowIds = new Set(followers.map((x) => x.id));
+          const prevIds = new Set(Object.keys(prev.users));
+          newFollowers = followers.filter((x) => !prevIds.has(x.id));
+          lostFollowers = Object.entries(prev.users)
+            .filter(([id]) => !nowIds.has(id))
+            .map(([id, v]) => ({ id, u: v[0], n: v[1], p: v[2] }));
+        }
+        await store.set({ followersSnapshot: { accountId: meta.account.id, ts: now(), users: serializeUsers(fUsers) } });
+      }
       const fT = meta.phases.followers.updatedAt || 0;
       const gT = meta.phases.following.updatedAt || 0;
       const results = {
@@ -753,6 +789,12 @@
         nonFollowers: cmp.nonFollowers,
         fans: cmp.fans,
         mutualCount: cmp.mutualCount,
+        followers,
+        following,
+        newFollowers,
+        lostFollowers,
+        followersSince,
+        followersDiffTrusted: followersTrusted,
       };
       await store.set({ results });
       for (const inc of incomplete) {

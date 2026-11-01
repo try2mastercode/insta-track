@@ -199,6 +199,11 @@
           status: 'ok',
         });
       }
+      const fa = /^\/api\/v1\/friendships\/(create|destroy)\/(\d+)\/$/.exec(url.pathname);
+      if (fa) return json(200, { friendship_status: { following: fa[1] === 'create', outgoing_request: false }, status: 'ok' });
+      if (url.pathname === '/api/v1/friendships/pending/') {
+        return json(200, { users: [{ pk: '1', username: 'mock_requester' }, { pk: '2', username: 'mock_requester2' }, { pk: '3', username: 'mock_requester3' }], status: 'ok' });
+      }
       return json(404, { message: 'Not found', status: 'fail' });
     }
 

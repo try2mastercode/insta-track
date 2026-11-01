@@ -367,7 +367,8 @@ test('pre-flight reports exactly which step failed and starts nothing', async ()
   assert.equal(r.steps.length, 1);
   assert.equal(r.steps[0].id, 'login');
   assert.equal(r.steps[0].ok, false);
-  assert.equal(storage.data.scan, undefined, 'nothing started');
+  assert.equal(storage.data.scan.status, 'idle', 'nothing started; a fresh start discards old progress');
+  assert.equal(storage.data.scan.phases.followers.collected, 0);
   assert.equal(errorsOf(storage)[0].phase, 'Pre-flight');
 });
 
@@ -436,4 +437,33 @@ test('profile-totals 429: retried, then the scan still runs with a visible warni
   assert.equal(storage.data.scan.status, 'complete');
   assert.equal(storage.data.results.countsUnavailable, true);
   assert.equal(storage.data.results.nonFollowers.length, 90);
+});
+
+test('follower analysis: first scan has no diff; a later scan reports new and lost followers', async () => {
+  const storage = makeStorage();
+  const clock = makeClock();
+  let tab = makeTab({ storage, clock });
+  await tab.engine.start({ mode: 'fresh' });
+  await tab.engine.whenIdle();
+  const first = storage.data.results;
+  assert.equal(first.followers.length, 230);
+  assert.equal(first.followersSince, null);
+  assert.deepEqual([first.newFollowers.length, first.lostFollowers.length], [0, 0]);
+  assert.equal(first.followersDiffTrusted, true);
+
+  // Pretend the previous scan saw someone who has since left, and did not yet see one current follower.
+  const snap = storage.data.followersSnapshot;
+  const [dropId] = Object.keys(snap.users);
+  delete snap.users[dropId];
+  snap.users['999001'] = ['ghost_user', 'Ghost', ''];
+  storage.data.followersSnapshot = snap;
+
+  clock.t += 3600 * 1000;
+  tab = makeTab({ storage, clock });
+  await tab.engine.start({ mode: 'fresh' });
+  await tab.engine.whenIdle();
+  const second = storage.data.results;
+  assert.deepEqual(second.newFollowers.map((x) => x.id), [dropId]);
+  assert.deepEqual(second.lostFollowers.map((x) => [x.id, x.u]), [['999001', 'ghost_user']]);
+  assert.ok(second.followersSince);
 });

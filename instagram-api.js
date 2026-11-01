@@ -51,6 +51,10 @@
       // (needed for the completeness check). Response: { user: { username,
       // follower_count, following_count, ... }, status: "ok" }.
       userInfo: (userId) => `/api/v1/users/${encodeURIComponent(userId)}/info/`,
+      // Incoming follow requests waiting for approval (private accounts). Response: { users: [...], status: "ok" }.
+      pending: () => '/api/v1/friendships/pending/',
+      // Follow / unfollow one account (POST, form-encoded, same as the website's button).
+      friendship: (action, userId) => `/api/v1/friendships/${action === 'follow' ? 'create' : 'destroy'}/${encodeURIComponent(userId)}/`,
     },
     cursorParam: 'max_id', // request query parameter carrying the cursor
     nextCursorField: 'next_max_id', // response field carrying the next cursor
@@ -310,6 +314,7 @@
    * opts.fetchImpl     fetch-compatible function (window.fetch in the content script,
    *                    a mock in mock mode / tests)
    * opts.cookieString  () => document.cookie
+   * opts.extraHeaders  optional () => headers merged into every request
    * opts.onRequest     optional ({method,url,status,ms,error}) => void  (debug log)
    * opts.now           optional clock
    */
@@ -317,6 +322,7 @@
     const fetchImpl = opts.fetchImpl;
     const getCookies = opts.cookieString || (() => '');
     const onRequest = opts.onRequest || (() => {});
+    const extraHeaders = opts.extraHeaders || (() => ({}));
     const nowFn = opts.now || (() => Date.now());
 
     function readSession() {
@@ -324,9 +330,10 @@
     }
 
     /** One GET request. Resolves to { text, url, status } or throws ApiError. */
-    async function request(path, query) {
+    async function request(path, query, method) {
       const session = readSession();
       const built = buildHeaders(session);
+      Object.assign(built.headers, extraHeaders());
       const relUrl = buildPath(path, query);
       if (built.missing.length) {
         throw new ApiError(CODES.MISSING_HEADER_OR_TOKEN, `Empty required value(s): ${built.missing.join(', ')}. Make sure you are logged in.`, { url: relUrl });
@@ -338,9 +345,10 @@
       let text;
       try {
         resp = await fetchImpl(relUrl, {
-          method: 'GET',
+          method: method || 'GET',
           credentials: 'include', // use the existing logged-in session
-          headers: built.headers,
+          headers: method === 'POST' ? Object.assign({ 'Content-Type': 'application/x-www-form-urlencoded' }, built.headers) : built.headers,
+          body: method === 'POST' ? '' : undefined,
           signal: ctrl.signal,
           cache: 'no-store',
         });
@@ -405,13 +413,56 @@
 
     /** Logged-in user's username plus total follower/following counts. */
     async function fetchProfile(userId) {
-      const res = await request(CONFIG.endpoints.userInfo(userId), {});
-      const json = parseResponse(res.parsed);
-      const p = wrapValidation(() => validateProfile(json), res);
-      return Object.assign({ id: String(userId), raw: { url: res.url, status: res.status, text: snippetOf(res.text, CONFIG.RAW_CHARS) } }, p);
+      try {
+        const res = await request(CONFIG.endpoints.userInfo(userId), {});
+        const json = parseResponse(res.parsed);
+        const p = wrapValidation(() => validateProfile(json), res);
+        return Object.assign({ id: String(userId), raw: { url: res.url, status: res.status, text: snippetOf(res.text, CONFIG.RAW_CHARS) } }, p);
+      } catch (e) {
+        // /users/{id}/info/ is not served as JSON on www.instagram.com for some sessions.
+        // Fall back to current_user (username) + web_profile_info (totals).
+        if (!e || e.code !== CODES.WRONG_ORIGIN_OR_HTML_RESPONSE) throw e;
+        try {
+          const r1 = await request('/api/v1/accounts/current_user/', { edit: 'true' });
+          const j1 = parseResponse(r1.parsed);
+          const username = j1 && j1.user && j1.user.username;
+          if (!username) throw e;
+          const r2 = await request('/api/v1/users/web_profile_info/', { username });
+          const j2 = parseResponse(r2.parsed);
+          const u = j2 && j2.data && j2.data.user;
+          const followers = u && u.edge_followed_by && Number(u.edge_followed_by.count);
+          const following = u && u.edge_follow && Number(u.edge_follow.count);
+          if (!Number.isFinite(followers) || !Number.isFinite(following)) throw e;
+          return { id: String(userId), username, followers, following, raw: { url: r2.url, status: r2.status, text: snippetOf(r2.text, CONFIG.RAW_CHARS) } };
+        } catch (e2) {
+          throw e; // report the original, clearer error
+        }
+      }
     }
 
-    return { readSession, fetchPage, fetchProfile };
+    /** Number of follow requests waiting for the logged-in user's approval. */
+    async function fetchPending() {
+      const res = await request(CONFIG.endpoints.pending(), {});
+      const json = parseResponse(res.parsed);
+      return wrapValidation(() => {
+        if (json.status !== 'ok' || !Array.isArray(json.users)) throw new Error('Expected status "ok" and a "users" array');
+        return { count: json.users.length };
+      }, res);
+    }
+
+    /** Follow or unfollow one account. action: 'follow' | 'unfollow'. Resolves { following, requested }. */
+    async function friendship(action, userId) {
+      if (!/^\d+$/.test(String(userId))) throw new ApiError(CODES.UNEXPECTED_RESPONSE_FORMAT, 'This account has no numeric ID (imported lists cannot follow or unfollow).', {});
+      const res = await request(CONFIG.endpoints.friendship(action, userId), {}, 'POST');
+      const json = parseResponse(res.parsed);
+      return wrapValidation(() => {
+        if (json.status !== 'ok') throw new Error(`Expected status "ok" but got ${JSON.stringify(json.status)}`);
+        const fs = json.friendship_status || {};
+        return { following: !!fs.following, requested: !!fs.outgoing_request };
+      }, res);
+    }
+
+    return { readSession, fetchPage, fetchProfile, fetchPending, friendship };
   }
 
   return {

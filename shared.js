@@ -81,12 +81,14 @@
   /**
    * files: [{ name, text }]. Followers files are a top-level array;
    * following.json wraps entries under "relationships_following".
-   * Returns { followers:[names], following:[names], fileCounts, skipped }.
+   * Also accepts pending_follow_requests.json (requests you sent).
+   * Returns { followers:[names], following:[names], pending:[names], fileCounts, skipped }.
    * Throws ParseError with a clear message if the structure does not match.
    */
   function parseExportFiles(files) {
     const followers = [];
     const following = [];
+    const pending = [];
     const skipped = [];
     let followerFiles = 0;
     let followingFiles = 0;
@@ -100,7 +102,11 @@
       }
       let kind = null;
       let list = null;
-      if (Array.isArray(data)) {
+      if (data && Array.isArray(data.relationships_follow_requests_sent)) {
+        // pending_follow_requests.json: requests YOU sent that are still waiting for approval
+        pending.push(...data.relationships_follow_requests_sent.map((entry, i) => usernameFromEntry(entry, name, i)));
+        continue;
+      } else if (Array.isArray(data)) {
         list = data;
         kind = /following/i.test(name) ? 'following' : 'followers';
       } else if (data && Array.isArray(data.relationships_following)) {
@@ -129,11 +135,9 @@
     }
     if (!followerFiles) throw new ParseError('No followers file found. Select followers_1.json (and followers_2.json ... if present).');
     if (!followingFiles) throw new ParseError('No following file found. Select following.json.');
-    return { followers, following, fileCounts: { followers: followerFiles, following: followingFiles }, skipped };
+    return { followers, following, pending, fileCounts: { followers: followerFiles, following: followingFiles }, skipped };
   }
 
-  // ---------------------------------------------------------------------------
-  // CSV
   // ---------------------------------------------------------------------------
 
   function csvCell(v) {
@@ -214,7 +218,6 @@
     computeByUsernames,
     parseExportFiles,
     ParseError,
-    toCsv,
     completeness,
     computeEta,
     etaText,

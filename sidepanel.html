@@ -11,6 +11,7 @@
     <div class="brand">
       <img src="icons/icon32.png" alt="" width="22" height="22">
       <h1>Insta-Track</h1>
+      <span id="verBadge" class="pill"></span>
       <span id="mockBadge" class="pill pill-warn" hidden>MOCK MODE</span>
     </div>
     <button id="btnWindow" class="icon-btn" data-act="openWindow" title="Open in separate window" aria-label="Open in separate window">&#x29C9;</button>
@@ -37,21 +38,23 @@
 
       <div id="banners"></div>
 
-      <div class="card" id="preflightCard">
-        <div class="card-head">
-          <h2>Connection check</h2>
-          <button id="btnTest" class="btn btn-small" data-act="test">Test connection</button>
-        </div>
-        <ul id="preflightList" class="steps"><li class="muted">Not run yet. It also runs automatically before every scan.</li></ul>
+      <div class="card" id="quickCard">
+        <h2>Quick check</h2>
+        <div class="controls"><button id="btnQuick" class="btn btn-primary" data-act="quick">Run quick check</button></div>
+        <div id="quickCd" class="cd" hidden></div>
+        <p id="quickTimer" class="small strong"></p>
+        <p id="quickMsg" class="small muted"></p>
       </div>
+
 
       <div class="card" id="progressCard" hidden>
         <div class="card-head">
           <h2 id="progressTitle">Progress</h2>
           <span id="statusPill" class="pill"></span>
         </div>
+        <div id="scanCd" class="cd" hidden></div>
         <div class="bar big"><div id="overallFill" class="fill"></div></div>
-        <div class="row between"><span id="overallPct" class="strong">0%</span><span id="etaText" class="muted">Calculating...</span></div>
+        <div class="row between"><span id="overallPct" class="strong">0%</span></div>
 
         <div class="phase">
           <div id="phaseFollowersLabel" class="phase-label"></div>
@@ -81,45 +84,59 @@
         <button id="btnFresh" class="btn" data-act="fresh" hidden>Start fresh</button>
       </div>
 
-      <details class="card dev" id="devCard">
-        <summary>Developer: mock mode</summary>
-        <p class="small muted">Mock mode replaces Instagram with fake responses so pause, resume, retries and the error panel can be tested safely. It still needs an Instagram tab open (that is where the scan runs). Mock data uses a fake account, so switch it off before a real scan.</p>
-        <label class="check"><input type="checkbox" id="mockToggle"> Use mock Instagram</label>
-        <label class="field">Scenario
-          <select id="mockScenario"></select>
-        </label>
-        <label class="check"><input type="checkbox" id="mockFast"> Fast timing (waits shrink to 5%)</label>
-      </details>
-
-      <div class="card danger">
-        <h2>Stored data</h2>
-        <p class="small muted">Deletes saved scan progress, results, the error and debug logs. Your hidden-accounts list is kept.</p>
-        <button id="btnClear" class="btn btn-danger" data-act="clear">Clear stored data</button>
+      <div class="card" id="preflightCard" hidden>
+        <div class="card-head"><h2>Connection check</h2></div>
+        <ul id="preflightList" class="steps"></ul>
       </div>
+
     </section>
 
     <!-- ======================= RESULTS ======================= -->
     <section id="pane-results" class="pane pane-flex">
+      <div id="hero" class="hero">
+        <div id="heroHandle" class="hero-handle">Not checked yet</div>
+        <div class="hero-row">
+          <div class="hero-stat"><b id="heroFollowers">&ndash;</b><span>followers</span></div>
+          <div id="heroAvatar" class="hero-avatar">?</div>
+          <div class="hero-stat"><b id="heroFollowing">&ndash;</b><span>following</span></div>
+        </div>
+      </div>
+
+      <div id="stats" class="tiles" hidden>
+        <button class="tile" data-act="goResults" data-sub="followers"><b id="statFollowers">&ndash;</b><span>Followers</span></button>
+        <button class="tile" data-act="goResults" data-sub="following"><b id="statFollowing">&ndash;</b><span>Following</span></button>
+        <button class="tile" data-act="goResults" data-sub="non"><b id="statNon">0</b><span>Not following back</span></button>
+        <button class="tile" data-act="goResults" data-sub="fans"><b id="statFans">0</b><span>Not followed back by me</span></button>
+      </div>
+
       <div id="resEmpty" class="empty"></div>
       <div id="resBody" hidden>
         <div class="res-head">
+          <button class="btn btn-small btn-export" id="btnExportNon" data-act="exportNon" title="Download Not following back and Not followed back by me as one Markdown (.md) file" aria-label="Download the two lists as a Markdown file"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></button>
           <select id="resSource" aria-label="Results source" hidden></select>
-          <h2 id="resCount"></h2>
-          <p id="resMeta" class="muted small"></p>
+          <h2 id="resCount" hidden></h2>
+          <p id="resMeta" class="muted small" hidden></p>
         </div>
         <div id="resBanners"></div>
-        <div class="subtabs">
+        <div class="subtabs" id="subtabs">
           <button class="subtab active" data-sub="non">Not following back <span id="cntNon" class="count"></span></button>
           <button class="subtab" data-sub="fans">Fans <span id="cntFans" class="count"></span></button>
+          <button class="subtab" data-sub="followers">Followers <span id="cntFollowers" class="count"></span></button>
+          <button class="subtab" data-sub="following">Following <span id="cntFollowing" class="count"></span></button>
+          <button class="subtab" data-sub="new">New <span id="cntNew" class="count"></span></button>
+          <button class="subtab" data-sub="lost">Lost <span id="cntLost" class="count"></span></button>
         </div>
         <div class="tools">
           <input id="resSearch" type="search" placeholder="Search username or name" aria-label="Search">
           <button class="btn btn-small" id="btnSort" data-act="sort" title="Toggle sort order">A &rarr; Z</button>
         </div>
         <div class="tools">
-          <button class="btn btn-small" data-act="exportCsv">Export CSV</button>
-          <button class="btn btn-small" data-act="copyUsernames">Copy usernames</button>
           <button class="btn btn-small" id="btnHidden" data-act="toggleHidden">Hidden (0)</button>
+        </div>
+        <div class="tools">
+          <span id="doneCount" class="muted small"></span>
+          <button class="btn btn-small btn-primary" data-act="addTag">Add tag</button>
+          <button class="btn btn-small" data-act="clearDone">Clear ticks</button>
         </div>
         <div id="listWrap" class="list-wrap"><div id="listSpacer"><div id="listRows"></div></div></div>
       </div>
@@ -137,6 +154,27 @@
 
     <!-- ======================= DEBUG ======================= -->
     <section id="pane-debug" class="pane">
+      <div class="card">
+        <div class="card-head">
+          <h2>Connection check</h2>
+          <button id="btnTest" class="btn btn-small" data-act="test">Test connection</button>
+        </div>
+        <p class="small muted">Runs automatically before every scan. Failures also show on the Scan tab.</p>
+      </div>
+      <details class="card dev" id="devCard">
+        <summary>Developer: mock mode</summary>
+        <p class="small muted">Mock mode replaces Instagram with fake responses so pause, resume, retries and the error panel can be tested safely. It still needs an Instagram tab open. Mock data uses a fake account, so switch it off before a real scan.</p>
+        <label class="check"><input type="checkbox" id="mockToggle"> Use mock Instagram</label>
+        <label class="field">Scenario
+          <select id="mockScenario"></select>
+        </label>
+        <label class="check"><input type="checkbox" id="mockFast"> Fast timing (waits shrink to 5%)</label>
+      </details>
+      <div class="card danger">
+        <h2>Stored data</h2>
+        <p class="small muted">Deletes saved scan progress, results, the error and debug logs. Your hidden-accounts list is kept.</p>
+        <button id="btnClear" class="btn btn-danger" data-act="clear">Clear stored data</button>
+      </div>
       <div class="card">
         <h2>Raw response</h2>
         <p class="small muted">If Instagram changed its format, press this and paste the result back to Claude Code. It copies a real API response (first ~6000 characters) to the clipboard.</p>
@@ -158,7 +196,7 @@
     <section id="pane-import" class="pane">
       <div class="card">
         <h2>Import from Instagram data export</h2>
-        <p class="small">No network calls and no rate limits. In Instagram: Accounts Center &rarr; Your information and permissions &rarr; Download your information &rarr; choose <em>Followers and following</em>, format <strong>JSON</strong>. Select <code>followers_1.json</code> (plus <code>followers_2.json</code> ... if present) and <code>following.json</code> below.</p>
+        <p class="small">No network calls and no rate limits. In Instagram: Accounts Center &rarr; Your information and permissions &rarr; Download your information &rarr; choose <em>Followers and following</em>, format <strong>JSON</strong>. Select <code>followers_1.json</code> (plus <code>followers_2.json</code> ... if present) and <code>following.json</code> below. Optional: also add <code>pending_follow_requests.json</code> to list the requests you sent that are still waiting.</p>
         <p class="notice">Limitation: the export has no numeric user IDs, so matching is by <strong>username</strong>. Someone who renamed their account since the export may be listed wrongly.</p>
         <input id="importFiles" type="file" accept=".json,application/json" multiple>
         <p id="importSel" class="small muted"></p>
